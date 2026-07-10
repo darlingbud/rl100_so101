@@ -73,3 +73,10 @@ scripts/train_policy_online_cm_flip.sh
 AGENTS.md
 .claude/
 .vscode/
+
+# local generated artifacts
+MUJOCO_LOG.TXT
+outputs/
+tem.py
+_C.cpython-310-x86_64-linux-gnu.so
+third_party/pytorch3d_simplified/pytorch3d/_C.cpython-310-x86_64-linux-gnu.so

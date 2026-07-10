@@ -87,12 +87,21 @@ def point_cloud_sampling(point_cloud:np.ndarray, num_points:int, method:str='uni
         point_cloud = point_cloud[sampled_indices]
     elif method == 'fps':
         # fast point cloud sampling using torch3d
-        point_cloud = torch.from_numpy(point_cloud).unsqueeze(0).cuda()
-        num_points = torch.tensor([num_points]).cuda()
-        # remember to only use coord to sample
-        _, sampled_indices = torch3d_ops.sample_farthest_points(points=point_cloud[...,:3], K=num_points)
-        point_cloud = point_cloud.squeeze(0).cpu().numpy()
-        point_cloud = point_cloud[sampled_indices.squeeze(0).cpu().numpy()]
+        try:
+            point_cloud_tensor = torch.from_numpy(point_cloud).unsqueeze(0).cuda()
+            num_points_tensor = torch.tensor([num_points]).cuda()
+            # remember to only use coord to sample
+            _, sampled_indices = torch3d_ops.sample_farthest_points(
+                points=point_cloud_tensor[..., :3],
+                K=num_points_tensor,
+            )
+            point_cloud = point_cloud_tensor.squeeze(0).cpu().numpy()
+            point_cloud = point_cloud[sampled_indices.squeeze(0).cpu().numpy()]
+        except RuntimeError as exc:
+            if 'Not compiled with GPU support' not in str(exc):
+                raise
+            sampled_indices = np.random.choice(point_cloud.shape[0], num_points, replace=False)
+            point_cloud = point_cloud[sampled_indices]
     else:
         raise NotImplementedError(f"point cloud sampling method {method} not implemented")
 
