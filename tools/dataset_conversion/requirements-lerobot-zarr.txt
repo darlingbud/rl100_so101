@@ -1,0 +1,7 @@
+# LeRobot v3 input and RL-100 Zarr v2 output
+av>=14,<19
+numpy>=2.0,<2.3
+pyarrow>=18,<30
+tqdm>=4.66,<5
+zarr>=2.12,<3
+numcodecs>=0.10,<0.16

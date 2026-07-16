@@ -1,0 +1,33 @@
+name: ro101_clip
+
+task_name: ${name}
+crop_shape: null
+
+shape_meta: &shape_meta
+  obs:
+    image_front:
+      shape: [3, 480, 640]
+      type: rgb
+    image_side:
+      shape: [3, 480, 640]
+      type: rgb
+    agent_pos:
+      shape: [6]
+      type: low_dim
+  action:
+    shape: [6]
+
+# Real-robot IL is evaluated through the policy server and LeRobot client.
+env_runner: null
+
+dataset:
+  _target_: rl_100.dataset.ro101_dataset.RO101Dataset
+  zarr_path: /home/tianma/work/RL-100/RL-100/data/DonQuihote16807.zarr
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  seed: ${training.seed}
+  val_ratio: 0.1
+  max_train_episodes: null
+  image_keys: [image_front, image_side]
+  pre_image_norm: false

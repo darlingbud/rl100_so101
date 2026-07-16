@@ -1013,6 +1013,20 @@ class TrainDP3Workspace:
         self.offline_last_path = os.path.join(self.output_dir, 'last')
 
         # =============================== stage 1-1: end diffusion training ===============================
+        # Optional IL-only exit. It is disabled for all existing configs and is
+        # used by real-robot datasets that have no simulation env_runner.
+        if cfg.get('stop_after_bc', False):
+            if self.is_ddp:
+                dist.barrier()
+            if self.rank == 0:
+                checkpoint_path = self.save_checkpoint(tag='latest')
+                cprint(f'BC-only training complete: {checkpoint_path}', 'green')
+                if wandb_run is not None:
+                    wandb_run.finish()
+            if self.is_ddp:
+                dist.barrier()
+            return
+
         # Distill to consistency model after BC training (before critic/dynamics training)
         if self.cfg.distill_phase == 'after_dp':
             self.distill2cm(train_dataloader, val_dataloader, wandb_run, env_runner, phase='after_dp')

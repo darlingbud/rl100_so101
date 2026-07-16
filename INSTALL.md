@@ -54,6 +54,12 @@ python -m pip install \
   timm==1.0.26 transformers==4.40.0
 ```
 
+For the optional lightweight remote policy server, install:
+
+```bash
+python -m pip install -r RL-100/requirements-serving.txt
+```
+
 Real-robot and camera tools are optional for simulation-only runs:
 
 ```bash

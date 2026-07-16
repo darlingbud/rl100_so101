@@ -1,0 +1,69 @@
+defaults:
+  - rl100_2d_epsilon
+  - override task: ro101_clip
+  - _self_
+
+name: train_ro101_2d_bc
+exp_name: ro101_clip_bc
+
+# The dedicated train_bc.py entry stops after imitation learning.
+only_bc: true
+stop_after_bc: true
+offline: false
+online: false
+eval: false
+use_wandb: true
+env_num: 1
+
+horizon: 5
+n_obs_steps: 2
+n_action_steps: 4
+dataset_obs_steps: ${n_obs_steps}
+
+use_recon: true
+use_vib: true
+kl_annealing: true
+
+policy:
+  scheduler_type: ddim
+  use_cm: false
+  img_shape: [3, 480, 640]
+  use_aug: true
+
+encoders:
+  resnet:
+    resize_shape: [224, 224]
+    crop_shape: null
+    random_crop: false
+    share_rgb_model: true
+    rgb_model:
+      weights: IMAGENET1K_V1
+    recon_loss_weight: 0.05
+    kl_loss_weight: 1.0
+    kl_beta: 1.0e-4
+
+dataloader:
+  batch_size: 64
+  num_workers: 8
+  shuffle: true
+  pin_memory: false
+  persistent_workers: false
+
+val_dataloader:
+  batch_size: 64
+  num_workers: 2
+  shuffle: false
+  pin_memory: false
+  persistent_workers: false
+
+training:
+  device: cuda:0
+  resume: false
+  num_epochs: 300
+  lr_warmup_steps: 500
+  checkpoint_every: 25
+  val_every: 5
+
+checkpoint:
+  save_ckpt: true
+  save_last_ckpt: true
