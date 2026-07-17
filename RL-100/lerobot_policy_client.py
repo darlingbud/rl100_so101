@@ -17,8 +17,6 @@ from typing import Any
 import numpy as np
 from websockets.legacy.client import connect
 
-from lerobot.cameras.opencv import OpenCVCameraConfig
-from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from rl_100.serving.protocol import PROTOCOL_VERSION, pack_message, unpack_message
 
 
@@ -65,7 +63,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def make_robot(args: argparse.Namespace) -> SO101Follower:
+def make_robot(args: argparse.Namespace):
+    from lerobot.cameras.opencv import OpenCVCameraConfig
+    from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
+
     cameras = {
         "front": OpenCVCameraConfig(
             index_or_path=args.front_camera,
@@ -143,7 +144,7 @@ def confirm_execution(args: argparse.Namespace) -> None:
         raise SystemExit("Execution cancelled")
 
 
-async def run(args: argparse.Namespace, robot: SO101Follower) -> None:
+async def run(args: argparse.Namespace, robot: Any) -> None:
     control_period = 1.0 / args.control_fps
     inference_period = 1.0 / args.inference_fps
     stop = asyncio.Event()

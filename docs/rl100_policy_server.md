@@ -261,6 +261,57 @@ python smoke_policy_server.py \
 成功时会打印 metadata、`(4,6)` actions 和服务端各阶段耗时。这个脚本只用于验证
 checkpoint、协议和 GPU 推理链路，不是 LeRobot 真机控制客户端。
 
+## 数据集动作回放服务
+
+`serve_dataset_actions.py` 使用同一套 WebSocket 协议，但不加载神经网络，适合把
+网络、序列化、action queue 和 LeRobot 执行链路从策略质量中隔离出来诊断。
+
+第一步使用 hold 模式。服务端把请求中最新的 `agent_pos` 重复为 4 个动作，机器人应
+保持当前位置：
+
+```bash
+cd /home/tianma/work/RL-100/RL-100
+conda activate rl100
+python serve_dataset_actions.py \
+  --dataset data/DonQuihote16807.zarr \
+  --mode hold \
+  --port 8000
+```
+
+下位机先保持 dry-run，不发送电机命令：
+
+```bash
+python lerobot_policy_client.py \
+  --url ws://<server-ip>:8000 \
+  --control-fps 30 \
+  --inference-fps 10 \
+  --duration 10
+```
+
+确认日志中的 action、RTT 和 underrun 正常后，hold 模式才可增加 `--execute`。客户端
+会再次要求输入 `MOVE` 确认。
+
+确认 dry-run 和 hold 正常后，选择一条 episode 回放专家动作：
+
+```bash
+python serve_dataset_actions.py \
+  --dataset data/DonQuihote16807.zarr \
+  --mode replay \
+  --episode-index 0 \
+  --start-step 0 \
+  --action-horizon 4 \
+  --port 8000
+```
+
+回放服务使用请求中的 `step_id`，按
+`episode_start + start_step + step_id` 读取动作。到达 episode 末尾后用最后一个动作
+填满 chunk；传入 `--loop` 才会循环。数据集是 30 FPS，回放客户端建议使用
+`--control-fps 30 --inference-fps 10`。
+
+`replay` 是绝对关节目标轨迹。加 `--execute` 前必须让机械臂处于所选 episode 的初始
+姿态附近，并先完成默认 dry-run 和 hold 测试。建议先为 replay 运行同一条不带
+`--execute` 的客户端命令，确认动作顺序和范围后再操作真机。
+
 ## 测试
 
 ```bash

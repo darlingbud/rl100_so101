@@ -98,13 +98,16 @@ class WebSocketPolicyServer:
 
                     if message_type == MESSAGE_INFER_REQUEST:
                         episode_id = _validate_episode_id(message, request_id)
-                        _validate_step_id(message, request_id)
+                        step_id = _validate_step_id(message, request_id)
                         if episode_id != last_episode_id:
                             await self._run_blocking(self._policy.reset, episode_id)
                             last_episode_id = episode_id
                         total_start = time.monotonic()
                         result = await self._run_blocking(
-                            self._policy.infer, message.get("observation")
+                            self._policy.infer,
+                            message.get("observation"),
+                            step_id=step_id,
+                            episode_id=episode_id,
                         )
                         result["timing"]["total_ms"] = (
                             time.monotonic() - total_start
@@ -156,10 +159,10 @@ class WebSocketPolicyServer:
         finally:
             logger.info("Connection closed from %s", remote)
 
-    async def _run_blocking(self, function, *args):
+    async def _run_blocking(self, function, *args, **kwargs):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            self._executor, functools.partial(function, *args)
+            self._executor, functools.partial(function, *args, **kwargs)
         )
 
 

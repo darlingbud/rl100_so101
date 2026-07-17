@@ -26,7 +26,8 @@ class FakeAdapter:
     def reset(self, episode_id=None):
         self.reset_ids.append(episode_id)
 
-    def infer(self, observation):
+    def infer(self, observation, *, step_id=None, episode_id=None):
+        self.infer_context = (step_id, episode_id)
         return {
             "actions": np.asarray(observation["actions"], dtype=np.float32),
             "timing": {
@@ -76,6 +77,7 @@ class WebSocketServerTest(unittest.TestCase):
                     )
                     self.assertIn("total_ms", response["timing"])
                     self.assertEqual(adapter.reset_ids, ["episode-a"])
+                    self.assertEqual(adapter.infer_context, (12, "episode-a"))
         finally:
             policy_server._executor.shutdown(wait=True)
 

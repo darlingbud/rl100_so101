@@ -305,7 +305,14 @@ class RL100PolicyAdapter:
             tensors[key] = torch.from_numpy(array).unsqueeze(0).to(self._device)
         return tensors
 
-    def infer(self, observation: Mapping[str, Any]) -> dict[str, Any]:
+    def infer(
+        self,
+        observation: Mapping[str, Any],
+        *,
+        step_id: int | None = None,
+        episode_id: str | None = None,
+    ) -> dict[str, Any]:
+        del step_id, episode_id
         preprocess_start = time.monotonic()
         obs_tensors = self._prepare_observation(observation)
         preprocess_ms = (time.monotonic() - preprocess_start) * 1000
