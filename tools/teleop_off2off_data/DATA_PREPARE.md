@@ -30,6 +30,53 @@ python data_prepare.py --config configs/data_prepare.yaml --mode build_zarr --ro
 python data_prepare.py --config configs/data_prepare.yaml --mode extend_zarr --rollout-source off2off_004 --base-zarr-path /path/to/base.zarr --zarr-output-path /path/to/new.zarr
 ```
 
+## Convert a LeRobot RO101 Dataset to Zarr
+
+The repository-level converter reads one LeRobot v3 dataset or merges all
+LeRobot v3 child datasets under an input directory. Run the following commands
+from the repository root.
+
+Inspect the input without writing output:
+
+```bash
+conda run --no-capture-output -n lerobot \
+  python tools/dataset_conversion/convert_lerobot_to_zarr.py \
+  --input /home/tianma/.cache/huggingface/lerobot/ro101 \
+  --output /home/tianma/.cache/huggingface/lerobot/ro101.zarr \
+  --cameras front side \
+  --inspect-only
+```
+
+Convert and merge all child datasets:
+
+```bash
+conda run --no-capture-output -n lerobot \
+  python tools/dataset_conversion/convert_lerobot_to_zarr.py \
+  --input /home/tianma/.cache/huggingface/lerobot/ro101 \
+  --output /home/tianma/.cache/huggingface/lerobot/ro101.zarr \
+  --cameras front side
+```
+
+The converter refuses to replace an existing output. Add `--overwrite` only
+when the existing Zarr is intentionally being rebuilt; this recursively removes
+that output directory before writing the replacement.
+
+The conversion completed on 2026-07-18 with these results:
+
+```text
+source datasets: 3
+episodes:        30
+frames:          13,926 at 30 Hz
+RGB cameras:     image_front, image_side
+image shape:     480 x 640 x 3 uint8 (NHWC)
+state/action:    6 float32 values per frame
+output:          /home/tianma/.cache/huggingface/lerobot/ro101.zarr
+output size:     approximately 5.8 GiB
+```
+
+The generated store is consumed by `RO101Dataset`. It contains RGB images and
+low-dimensional arm state; it is not a point-cloud dataset.
+
 ## Modes
 
 `raw_to_npy` converts raw teleop collection files into a processed `.npy` dictionary.

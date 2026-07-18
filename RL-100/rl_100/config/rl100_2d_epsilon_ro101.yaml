@@ -15,11 +15,13 @@ eval: false
 use_wandb: true
 env_num: 1
 
-horizon: 5
-n_obs_steps: 2
+horizon: 8
+n_obs_steps: 5
 n_action_steps: 4
 dataset_obs_steps: ${n_obs_steps}
 
+# Establish a plain supervised baseline before adding information bottleneck
+# and reconstruction regularization.
 use_recon: true
 use_vib: true
 kl_annealing: true
@@ -29,6 +31,8 @@ policy:
   use_cm: false
   img_shape: [3, 480, 640]
   use_aug: true
+  ddim_noise_scheduler:
+    prediction_type: epsilon
 
 encoders:
   resnet:
@@ -43,14 +47,14 @@ encoders:
     kl_beta: 1.0e-4
 
 dataloader:
-  batch_size: 64
+  batch_size: 32
   num_workers: 8
   shuffle: true
   pin_memory: false
   persistent_workers: false
 
 val_dataloader:
-  batch_size: 64
+  batch_size: 16
   num_workers: 2
   shuffle: false
   pin_memory: false
@@ -59,7 +63,12 @@ val_dataloader:
 training:
   device: cuda:0
   resume: false
-  num_epochs: 300
+  reset_lr_scheduler_on_resume: false
+  resume_lr: null
+  resume_lr_warmup_steps: 0
+  use_ema: false
+  num_epochs: 500
+  gradient_accumulate_every: 2
   lr_warmup_steps: 500
   checkpoint_every: 25
   val_every: 5

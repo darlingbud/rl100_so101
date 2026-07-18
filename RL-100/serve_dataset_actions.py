@@ -11,7 +11,7 @@ from rl_100.serving.websocket_server import WebSocketPolicyServer
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", default="data/DonQuihote16807.zarr")
+    parser.add_argument("--dataset", default="data/DonQuihote16807_v2.zarr")
     parser.add_argument("--mode", choices=("hold", "replay"), default="hold")
     parser.add_argument("--episode-index", type=int, default=0)
     parser.add_argument("--start-step", type=int, default=0)

@@ -26,6 +26,8 @@ class RO101Dataset(BaseDataset):
         seed: int = 42,
         val_ratio: float = 0.0,
         max_train_episodes: int | None = None,
+        max_sequences: int | None = None,
+        validation_same_as_train: bool = False,
         image_keys: Sequence[str] = ("image_front", "image_side"),
         pre_image_norm: bool = False,
     ) -> None:
@@ -58,7 +60,18 @@ class RO101Dataset(BaseDataset):
             seed=seed,
         )
         self.sampler = self._make_sampler(train_mask, horizon, pad_before, pad_after)
+        if max_sequences is not None:
+            max_sequences = int(max_sequences)
+            if max_sequences < 1:
+                raise ValueError("max_sequences must be at least 1")
+            if len(self.sampler) > max_sequences:
+                rng = np.random.default_rng(seed=seed)
+                selected = rng.choice(
+                    len(self.sampler), size=max_sequences, replace=False
+                )
+                self.sampler.indices = self.sampler.indices[np.sort(selected)]
         self.train_mask = train_mask
+        self.validation_same_as_train = validation_same_as_train
         self.horizon = horizon
         self.pad_before = pad_before
         self.pad_after = pad_after
@@ -75,6 +88,11 @@ class RO101Dataset(BaseDataset):
 
     def get_validation_dataset(self) -> "RO101Dataset":
         val_set = copy.copy(self)
+        if self.validation_same_as_train:
+            # The sampler is read-only during training, so sharing it gives an
+            # exact train/validation comparison for overfit diagnostics.
+            val_set.sampler = self.sampler
+            return val_set
         val_set.sampler = self._make_sampler(
             ~self.train_mask,
             self.horizon,

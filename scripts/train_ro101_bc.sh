@@ -6,5 +6,6 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${REPO_ROOT}/RL-100"
 export HYDRA_FULL_ERROR=1
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 python train_bc.py --config-name=rl100_2d_epsilon_ro101 "$@"

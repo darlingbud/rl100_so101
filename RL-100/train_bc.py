@@ -15,6 +15,7 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
+from rl_100.common.kl_annealing import kl_annealing_progress
 from rl_100.common.pytorch_util import dict_apply, optimizer_to
 from rl_100.dataset.base_dataset import BaseDataset
 from rl_100.model.common.lr_scheduler import get_scheduler
@@ -55,7 +56,14 @@ def _save_checkpoint(path, cfg, model, ema_model, optimizer, lr_scheduler, epoch
     print(f"Checkpoint saved to {path}")
 
 
-def _load_checkpoint(path, model, ema_model, optimizer, lr_scheduler):
+def _load_checkpoint(
+    path,
+    model,
+    ema_model,
+    optimizer,
+    lr_scheduler,
+    load_lr_scheduler=True,
+):
     with pathlib.Path(path).open("rb") as checkpoint_file:
         payload = torch.load(checkpoint_file, pickle_module=dill, map_location="cpu")
     states = payload["state_dicts"]
@@ -64,7 +72,7 @@ def _load_checkpoint(path, model, ema_model, optimizer, lr_scheduler):
         ema_model.load_state_dict(states["ema_model"])
     if "optimizer" in states:
         optimizer.load_state_dict(states["optimizer"])
-    if "lr_scheduler" in states:
+    if load_lr_scheduler and "lr_scheduler" in states:
         lr_scheduler.load_state_dict(states["lr_scheduler"])
     epoch = dill.loads(payload.get("pickles", {}).get("epoch", dill.dumps(0)))
     global_step = dill.loads(
@@ -126,10 +134,48 @@ def main(cfg: OmegaConf) -> None:
     global_step = 0
     latest_path = checkpoint_dir / "latest.ckpt"
     if cfg.training.resume and latest_path.is_file():
-        start_epoch, global_step = _load_checkpoint(
-            latest_path, model, ema_model, optimizer, lr_scheduler
+        reset_lr_scheduler = bool(
+            cfg.training.get("reset_lr_scheduler_on_resume", False)
         )
+        start_epoch, global_step = _load_checkpoint(
+            latest_path,
+            model,
+            ema_model,
+            optimizer,
+            lr_scheduler,
+            load_lr_scheduler=not reset_lr_scheduler,
+        )
+        # LinearNormalizer rebuilds its ParameterDict while loading a state
+        # dict, so those dynamically-created tensors start on CPU even when
+        # the policy was already moved to CUDA before loading.
+        model.to(device)
+        if ema_model is not None:
+            ema_model.to(device)
         optimizer_to(optimizer, device)
+        if reset_lr_scheduler:
+            resume_lr = float(
+                cfg.training.get("resume_lr", None) or cfg.optimizer.lr
+            )
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = resume_lr
+                param_group["initial_lr"] = resume_lr
+            remaining_updates = max(
+                1,
+                updates_per_epoch
+                * max(int(cfg.training.num_epochs) - start_epoch, 1),
+            )
+            lr_scheduler = get_scheduler(
+                cfg.training.lr_scheduler,
+                optimizer=optimizer,
+                num_warmup_steps=int(
+                    cfg.training.get("resume_lr_warmup_steps", 0)
+                ),
+                num_training_steps=remaining_updates,
+            )
+            print(
+                f"Reset LR scheduler: lr={resume_lr:g}, "
+                f"remaining_updates={remaining_updates}"
+            )
         print(f"Resuming from epoch {start_epoch}, step {global_step}")
 
     wandb_run = None
@@ -145,7 +191,7 @@ def main(cfg: OmegaConf) -> None:
             config=OmegaConf.to_container(cfg, resolve=True),
         )
 
-    best_val_loss = float("inf")
+    best_val_action_rmse = float("inf")
     target_beta_kl = None
     if hasattr(model.obs_encoder, "beta_kl"):
         target_beta_kl = float(model.obs_encoder.beta_kl)
@@ -153,7 +199,11 @@ def main(cfg: OmegaConf) -> None:
     optimizer.zero_grad(set_to_none=True)
     for epoch in range(start_epoch, int(cfg.training.num_epochs)):
         if cfg.kl_annealing and target_beta_kl is not None:
-            progress = epoch / max(int(cfg.training.num_epochs) - 1, 1)
+            progress = kl_annealing_progress(
+                epoch,
+                cfg.training.num_epochs,
+                cfg.get("kl_annealing_epoch"),
+            )
             current_beta_kl = target_beta_kl * progress
             model.obs_encoder.beta_kl = current_beta_kl
             if ema_model is not None:
@@ -161,7 +211,7 @@ def main(cfg: OmegaConf) -> None:
 
         model.train()
         train_losses = []
-        auxiliary_losses = {"kl_loss": [], "recon_loss": []}
+        component_losses = {"bc_loss": [], "kl_loss": [], "recon_loss": []}
         progress = tqdm.tqdm(train_loader, desc=f"BC epoch {epoch}", leave=False)
         for batch_idx, batch in enumerate(progress):
             batch = _to_device(batch, device)
@@ -184,8 +234,8 @@ def main(cfg: OmegaConf) -> None:
 
             loss_value = float(raw_loss.detach().cpu())
             train_losses.append(loss_value)
-            for key in auxiliary_losses:
-                auxiliary_losses[key].append(float(loss_items.get(key, 0.0)))
+            for key in component_losses:
+                component_losses[key].append(float(loss_items.get(key, 0.0)))
             progress.set_postfix(loss=f"{loss_value:.5f}")
 
             max_steps = cfg.training.get("max_train_steps", None)
@@ -200,7 +250,7 @@ def main(cfg: OmegaConf) -> None:
         }
         if target_beta_kl is not None:
             metrics["beta_kl"] = float(model.obs_encoder.beta_kl)
-        for key, values in auxiliary_losses.items():
+        for key, values in component_losses.items():
             metrics[f"train_{key}"] = float(np.mean(values))
 
         should_validate = (epoch + 1) % int(cfg.training.val_every) == 0
@@ -208,17 +258,41 @@ def main(cfg: OmegaConf) -> None:
             eval_model = ema_model if ema_model is not None else model
             eval_model.eval()
             val_losses = []
+            val_bc_losses = []
+            action_abs_error = 0.0
+            action_squared_error = 0.0
+            action_element_count = 0
             with torch.inference_mode():
                 for batch_idx, batch in enumerate(val_loader):
                     batch = _to_device(batch, device)
-                    val_loss, _ = eval_model.compute_loss(batch)
+                    val_loss, val_items = eval_model.compute_loss(batch)
                     val_losses.append(float(val_loss.cpu()))
+                    val_bc_losses.append(float(val_items["bc_loss"]))
+
+                    prediction = eval_model.predict_action(
+                        batch["obs"], deterministic=True, use_cm=False
+                    )["action"]
+                    target_start = (
+                        eval_model.n_obs_steps - 1 if eval_model.no_pre_action else 0
+                    )
+                    target = batch["action"][
+                        :, target_start : target_start + prediction.shape[1]
+                    ]
+                    error = prediction - target
+                    action_abs_error += float(error.abs().sum().cpu())
+                    action_squared_error += float(error.square().sum().cpu())
+                    action_element_count += error.numel()
                     max_steps = cfg.training.get("max_val_steps", None)
                     if max_steps is not None and batch_idx + 1 >= int(max_steps):
                         break
             metrics["val_loss"] = float(np.mean(val_losses))
-            if metrics["val_loss"] < best_val_loss:
-                best_val_loss = metrics["val_loss"]
+            metrics["val_bc_loss"] = float(np.mean(val_bc_losses))
+            metrics["val_action_mae"] = action_abs_error / action_element_count
+            metrics["val_action_rmse"] = np.sqrt(
+                action_squared_error / action_element_count
+            )
+            if metrics["val_action_rmse"] < best_val_action_rmse:
+                best_val_action_rmse = metrics["val_action_rmse"]
                 _save_checkpoint(
                     checkpoint_dir / "best.ckpt",
                     cfg,

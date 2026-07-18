@@ -71,6 +71,7 @@ use_pre_norm: False
 load_bc: False
 gamma: 0.99
 kl_annealing: True
+kl_annealing_epoch: null  # null: anneal across training.num_epochs
 bppo_chunk_level_ratio: True
 lddm:
   _target_: rl_100.policy.lddm.LDDM
@@ -143,7 +144,7 @@ policy:
   use_up_condition: true
   joint_opt_encoder: False
   integrate_strategy: 'concat' # concat, sum
-  model: 'sample_dp3' # dp3 sample_dp3 mlp
+  model: 'skipnet' # dp3 sample_dp3 mlp
   feature_type: ${feature_type} # 2D, 3D, or 2D3D
   use_agent_pos: ${use_agent_pos}
   use_visual: True

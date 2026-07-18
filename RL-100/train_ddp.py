@@ -36,6 +36,7 @@ from rl_100.policy.rl100_2d import RL1002D
 from rl_100.dataset.base_dataset import BaseDataset
 from rl_100.env_runner.base_runner import BaseRunner
 from rl_100.common.checkpoint_util import TopKCheckpointManager
+from rl_100.common.kl_annealing import kl_annealing_progress
 from rl_100.common.pytorch_util import dict_apply, optimizer_to
 from rl_100.model.diffusion.ema_model import EMAModel
 from rl_100.model.common.lr_scheduler import get_scheduler
@@ -793,7 +794,11 @@ class TrainDP3Workspace:
                 # KL annealing
                 model_obs_encoder = self.model_module.obs_encoder if self.is_ddp else self.model.obs_encoder
                 if cfg.kl_annealing and hasattr(model_obs_encoder, 'beta_kl'):
-                    progress = local_epoch_idx / max(cfg.training.num_epochs - 1, 1)
+                    progress = kl_annealing_progress(
+                        local_epoch_idx,
+                        cfg.training.num_epochs,
+                        cfg.get("kl_annealing_epoch"),
+                    )
                     model_obs_encoder.beta_kl = target_beta_kl * progress
 
                 step_log = dict()

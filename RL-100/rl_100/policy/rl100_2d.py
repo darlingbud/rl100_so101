@@ -500,8 +500,12 @@ class RL1002D(BasePolicy):
                         model_output, t, trajectory, eta=self.eta).denoised
             else:
                 if deterministic:
-                    trajectory = scheduler.step_mean(
-                        model_output, t, trajectory, ).prev_sample
+                    # Deterministic DDIM inference is eta=0. step_mean defaults
+                    # to eta=1 and follows the mean of a different stochastic
+                    # process, which is not the sampler used by the BC target.
+                    trajectory = scheduler.step(
+                        model_output, t, trajectory, eta=0.0,
+                        generator=generator).prev_sample
                 else:
                     trajectory, _ = scheduler.step_logprob(
                         model_output, t, trajectory)
@@ -954,17 +958,19 @@ class RL1002D(BasePolicy):
             else:
                 raise ValueError(f"Unsupported prediction type {pred_type}")
         # else: target already set in flow branch above (velocity = noise - trajectory)
-        loss = F.mse_loss(pred, target, reduction='none')
-        loss = loss * loss_mask.type(loss.dtype)
-        loss = reduce(loss, 'b ... -> b (...)', 'mean')
-        loss = loss.mean()
+        diffusion_loss = F.mse_loss(pred, target, reduction='none')
+        diffusion_loss = diffusion_loss * loss_mask.type(diffusion_loss.dtype)
+        diffusion_loss = reduce(diffusion_loss, 'b ... -> b (...)', 'mean')
+        diffusion_loss = diffusion_loss.mean()
+        loss = diffusion_loss
         # Fix 4: add aux loss when either recon or vib is active
         need_aux_loss = self.use_recon or getattr(self.obs_encoder, 'use_vib', False)
         if need_aux_loss:
             loss += vib_recon_loss
 
         loss_dict = {
-                'bc_loss': loss.item(),
+                'bc_loss': diffusion_loss.item(),
+                'total_loss': loss.item(),
                 'kl_loss': loss_items.get('kl_loss', 0.0),
                 'recon_loss': loss_items.get('recon_loss', 0.0),
             }
