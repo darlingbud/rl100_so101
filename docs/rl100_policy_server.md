@@ -226,6 +226,18 @@ LeRobot 将每关节单次目标变化限制为 5 个归一化单位，可用
 `--max-relative-target` 调整。程序每 5 秒打印实际频率、
 平均 RTT 和动作缓冲欠载次数。`Ctrl-C` 会停止循环并断开设备。
 
+需要诊断跨推理 action 抖动时，可增加：
+
+```bash
+--action-log outputs/action_chunks.jsonl
+```
+
+JSONL 使用 `record_type` 区分记录：`inference` 包含原始 action chunk、对应实时关节
+state、RTT、`first_action_minus_state` 和 `first_action_minus_previous_first`；
+`plan_update` 记录新 chunk 替换了多少未执行动作；`control` 则包含每个控制周期选中的
+chunk/action 索引、原始目标、`send_action()` 返回的限幅后真实发送目标、是否发生裁剪、
+发送耗时与调度延迟。由此可以完整区分策略输出、chunk 调度和电机指令问题。
+
 服务端不代替下位机完成相机、点云或机器人坐标系转换；这些规则必须与训练数据一致，待具体 LeRobot 机器人确定后实现。
 
 ## 健康检查

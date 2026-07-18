@@ -9,13 +9,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections import deque
+import json
 import logging
+from pathlib import Path
 import signal
 import time
 from typing import Any
 
 import numpy as np
-from websockets.legacy.client import connect
+from websockets.asyncio.client import connect
 
 from rl_100.serving.protocol import PROTOCOL_VERSION, pack_message, unpack_message
 
@@ -59,6 +61,12 @@ def parse_args() -> argparse.Namespace:
         help="Stop cleanly after this many seconds (useful for dry-run tests)",
     )
     parser.add_argument("--episode-id", default="lerobot-live")
+    parser.add_argument(
+        "--action-log",
+        type=Path,
+        default=None,
+        help="Write every received action chunk and matching state as JSON Lines",
+    )
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args()
 
@@ -151,13 +159,20 @@ async def run(args: argparse.Namespace, robot: Any) -> None:
     producer_done = asyncio.Event()
     hardware_lock = asyncio.Lock()
     plan_lock = asyncio.Lock()
-    action_plan: deque[np.ndarray] = deque()
+    action_plan: deque[tuple[int, int, np.ndarray]] = deque()
     executed_steps = 0
     inference_count = 0
     control_count = 0
     underruns = 0
     rtt_sum_ms = 0.0
     reported_chunk_size: int | None = None
+    previous_chunk_first: np.ndarray | None = None
+    action_log = None
+    if args.action_log is not None:
+        action_log_path = args.action_log.expanduser().resolve()
+        action_log_path.parent.mkdir(parents=True, exist_ok=True)
+        action_log = action_log_path.open("a", encoding="utf-8", buffering=1)
+        LOG.info("Recording received action chunks to %s", action_log_path)
     stats_started = time.monotonic()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -172,9 +187,14 @@ async def run(args: argparse.Namespace, robot: Any) -> None:
         return observation_frame(raw)
 
     async def inference_loop() -> None:
-        nonlocal inference_count, rtt_sum_ms, reported_chunk_size
+        nonlocal inference_count, rtt_sum_ms, reported_chunk_size, previous_chunk_first
         request_id = 0
-        async with connect(args.url, compression=None, max_size=64 * 1024 * 1024) as ws:
+        async with connect(
+            args.url,
+            compression=None,
+            max_size=64 * 1024 * 1024,
+            ping_interval=None,
+        ) as ws:
             metadata = unpack_message(await ws.recv())
             if metadata.get("message_type") != "metadata":
                 raise RuntimeError(
@@ -224,9 +244,50 @@ async def run(args: argparse.Namespace, robot: Any) -> None:
                         chunk_size,
                         metadata_chunk_size,
                     )
+                current_state = history[-1]["agent_pos"]
+                if action_log is not None:
+                    first_action = actions[0]
+                    record = {
+                        "record_type": "inference",
+                        "time_ns": time.time_ns(),
+                        "request_id": request_id,
+                        "executed_step_id": executed_steps,
+                        "rtt_ms": rtt_ms,
+                        "server_timing": response.get("timing"),
+                        "agent_pos": current_state.tolist(),
+                        "actions": actions.tolist(),
+                        "first_action_minus_state": (
+                            first_action - current_state
+                        ).tolist(),
+                        "first_action_minus_previous_first": (
+                            None
+                            if previous_chunk_first is None
+                            else (first_action - previous_chunk_first).tolist()
+                        ),
+                    }
+                    action_log.write(json.dumps(record, separators=(",", ":")) + "\n")
+                previous_chunk_first = actions[0].copy()
                 async with plan_lock:
+                    replaced_actions = len(action_plan)
                     action_plan.clear()
-                    action_plan.extend(actions.copy())
+                    action_plan.extend(
+                        (request_id, action_index, action.copy())
+                        for action_index, action in enumerate(actions)
+                    )
+                if action_log is not None:
+                    action_log.write(
+                        json.dumps(
+                            {
+                                "record_type": "plan_update",
+                                "time_ns": time.time_ns(),
+                                "request_id": request_id,
+                                "replaced_unexecuted_actions": replaced_actions,
+                                "new_plan_size": chunk_size,
+                            },
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    )
                 inference_count += 1
                 rtt_sum_ms += rtt_ms
                 LOG.debug(
@@ -251,23 +312,67 @@ async def run(args: argparse.Namespace, robot: Any) -> None:
         nonlocal executed_steps, control_count, underruns
         next_tick = time.monotonic()
         while not stop.is_set():
-            action = None
+            planned_action = None
             async with plan_lock:
                 if action_plan:
-                    action = action_plan.popleft()
-            if action is None:
+                    planned_action = action_plan.popleft()
+            if planned_action is None:
                 underruns += 1
                 if producer_done.is_set() and args.once:
                     stop.set()
                     break
             else:
+                chunk_request_id, chunk_action_index, action = planned_action
+                tick_started = time.monotonic()
+                sent_array = None
                 if args.execute:
                     async with hardware_lock:
-                        await asyncio.to_thread(robot.send_action, action_dict(action))
+                        sent = await asyncio.to_thread(
+                            robot.send_action, action_dict(action)
+                        )
+                    sent_array = np.asarray(
+                        [sent[f"{motor}.pos"] for motor in MOTORS], dtype=np.float32
+                    )
                 control_count += 1
                 executed_steps += 1
                 if not args.execute:
                     LOG.debug("DRY-RUN action step=%d: %s", executed_steps, action)
+                if action_log is not None:
+                    was_clamped = (
+                        None
+                        if sent_array is None
+                        else bool(
+                            not np.allclose(sent_array, action, rtol=0.0, atol=1e-4)
+                        )
+                    )
+                    action_log.write(
+                        json.dumps(
+                            {
+                                "record_type": "control",
+                                "time_ns": time.time_ns(),
+                                "control_step": executed_steps,
+                                "chunk_request_id": chunk_request_id,
+                                "chunk_action_index": chunk_action_index,
+                                "raw_action": action.tolist(),
+                                "sent_action": (
+                                    None
+                                    if sent_array is None
+                                    else sent_array.tolist()
+                                ),
+                                "clamped": was_clamped,
+                                "execute": bool(args.execute),
+                                "send_duration_ms": (
+                                    time.monotonic() - tick_started
+                                )
+                                * 1000,
+                                "schedule_lag_ms": max(
+                                    (time.monotonic() - next_tick) * 1000, 0.0
+                                ),
+                            },
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    )
             next_tick += control_period
             delay = next_tick - time.monotonic()
             if delay > 0:
@@ -320,6 +425,8 @@ async def run(args: argparse.Namespace, robot: Any) -> None:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if action_log is not None:
+            action_log.close()
 
 
 def main() -> None:

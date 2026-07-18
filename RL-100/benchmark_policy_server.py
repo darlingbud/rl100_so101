@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 import numpy as np
-from websockets.legacy.client import connect
+from websockets.asyncio.client import connect
 
 from rl_100.serving.protocol import PROTOCOL_VERSION, pack_message, unpack_message
 
@@ -52,6 +52,7 @@ async def benchmark(args: argparse.Namespace) -> None:
         compression=None,
         max_size=64 * 1024 * 1024,
         open_timeout=args.timeout,
+        ping_interval=None,
     ) as websocket:
         metadata = unpack_message(await asyncio.wait_for(websocket.recv(), args.timeout))
         if metadata.get("message_type") != "metadata":
