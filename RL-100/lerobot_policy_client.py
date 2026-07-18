@@ -35,13 +35,13 @@ MOTORS = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="ws://192.168.0.135:8000")
-    parser.add_argument("--port", default="/dev/robot_follower")
+    parser.add_argument("--url", default="ws://127.0.0.1:8000")
+    parser.add_argument("--port", default="/dev/follower")
     parser.add_argument("--robot-id", default="my_awesome_follower_arm")
     parser.add_argument("--front-camera", type=int, default=0)
-    parser.add_argument("--side-camera", type=int, default=1)
+    parser.add_argument("--side-camera", type=int, default=2)
     parser.add_argument("--control-fps", type=float, default=10.0)
-    parser.add_argument("--inference-fps", type=float, default=6.0)
+    parser.add_argument("--inference-fps", type=float, default=3.0)
     parser.add_argument("--fps", type=float, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--fourcc", default="MJPG")
     parser.add_argument(
