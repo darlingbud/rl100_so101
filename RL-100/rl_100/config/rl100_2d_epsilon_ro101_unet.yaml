@@ -1,0 +1,11 @@
+defaults:
+  - rl100_2d_epsilon_ro101
+  - _self_
+
+name: train_ro101_2d_unet_bc
+exp_name: ro101_clip_unet_bc
+
+policy:
+  model: dp3
+  down_dims: [64, 128, 256]
+  global_cond_project_dim: 256

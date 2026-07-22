@@ -53,6 +53,7 @@ class RL1002D(BasePolicy):
             num_inference_steps=None,
             obs_as_global_cond=True,
             diffusion_step_embed_dim=256,
+            global_cond_project_dim=None,
             down_dims=(256,512,1024),
             kernel_size=5,
             n_groups=8,
@@ -168,6 +169,7 @@ class RL1002D(BasePolicy):
             input_dim=input_dim,
             local_cond_dim=None,
             global_cond_dim=global_cond_dim,
+            global_cond_project_dim=global_cond_project_dim,
             diffusion_step_embed_dim=diffusion_step_embed_dim,
             down_dims=down_dims,
             kernel_size=kernel_size,
@@ -962,17 +964,24 @@ class RL1002D(BasePolicy):
         diffusion_loss = diffusion_loss * loss_mask.type(diffusion_loss.dtype)
         diffusion_loss = reduce(diffusion_loss, 'b ... -> b (...)', 'mean')
         diffusion_loss = diffusion_loss.mean()
-        loss = diffusion_loss
         # Fix 4: add aux loss when either recon or vib is active
         need_aux_loss = self.use_recon or getattr(self.obs_encoder, 'use_vib', False)
+        total_loss = diffusion_loss
         if need_aux_loss:
-            loss += vib_recon_loss
+            total_loss = diffusion_loss + vib_recon_loss
+
+        loss_tensors = {'bc': diffusion_loss}
+        if '_kl_loss_tensor' in loss_items:
+            loss_tensors['kl'] = loss_items['_kl_loss_tensor']
+        if '_recon_loss_tensor' in loss_items:
+            loss_tensors['recon'] = loss_items['_recon_loss_tensor']
 
         loss_dict = {
                 'bc_loss': diffusion_loss.item(),
-                'total_loss': loss.item(),
+                'total_loss': total_loss.item(),
                 'kl_loss': loss_items.get('kl_loss', 0.0),
                 'recon_loss': loss_items.get('recon_loss', 0.0),
+                '_loss_tensors': loss_tensors,
             }
 
 
@@ -982,7 +991,7 @@ class RL1002D(BasePolicy):
         # print(f"t5-t4: {t5-t4:.3f}")
         # print(f"t6-t5: {t6-t5:.3f}")
         
-        return loss, loss_dict
+        return total_loss, loss_dict
 
     def compute_ddim2cm_loss(self, batch, distill2mean=False, fix_encoder=False, online=False):
         assert not self.is_flow, "Flow does not support CM distillation (compute_ddim2cm_loss)"

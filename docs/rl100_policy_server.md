@@ -271,6 +271,48 @@ PYTHON_BIN=/home/tianma/miniconda3/envs/lerobot/bin/python \
 action chunk 在 10 Hz 控制频率下覆盖约 400 ms。若日志持续出现 underrun，应继续
 降低 `--inference-fps` 或控制频率，而不是让请求并发堆积。
 
+### Human-in-the-loop 数据采集
+
+`scripts/collect_ro101_hitl.sh` 使用 SO101 leader arm 实时接管策略，并将完整 transition
+追加保存为 RL-100 Zarr。Follower、leader 和策略服务都准备好后运行：
+
+```bash
+cd /home/tianma/work/RL-100
+
+./scripts/collect_ro101_hitl.sh \
+  --url ws://127.0.0.1:8000 \
+  --port /dev/follower \
+  --leader-port /dev/leader \
+  --front-camera 0 \
+  --side-camera 2 \
+  --control-fps 10 \
+  --inference-fps 3 \
+  --max-relative-target 5 \
+  --output /home/tianma/work/RL-100/RL-100/data/ro101_hitl.zarr \
+  --execute
+```
+
+启动时仍需输入 `MOVE`。进入采集界面后使用单键控制，无需回车：
+
+```text
+n      开始一个 episode
+SPACE  在 POLICY/HUMAN 控制之间切换
+s      成功结束并保存
+f      失败结束并保存
+a      丢弃当前 episode
+q      退出
+```
+
+leader 默认始终关闭力矩，不需要主动跟随 follower。进入 HUMAN 时会记录两臂的接管姿态，
+随后将 leader 的相对位移叠加到 follower 接管姿态上，因此切换瞬间不会跳变。可用
+`--human-control-mode direct` 恢复绝对位置遥操作；`--leader-follow-policy` 可显式启用 leader
+主动跟随，但不建议用于低阻力示教臂。POLICY 和 HUMAN 都使用 `--control-fps`，默认均为
+10 Hz。接管状态变化时会清空未执行的策略 action chunk；从 HUMAN 切回 POLICY 后等待
+基于最新观测生成的新 chunk。
+数据集记录双相机、当前/下一关节状态、策略动作、leader 动作、
+限幅后实际动作、intervention、reward、return、done 和 timeout。程序异常退出时不会把
+未完成 episode 追加到正式数据集。
+
 ### 通用 client 命令
 
 下面是可替换 URL、端口和相机 ID 的通用形式：

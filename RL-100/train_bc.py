@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import pathlib
 import random
+from collections import defaultdict
 
 import dill
 import hydra
@@ -15,6 +16,7 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
+from rl_100.common.gradient_stats import loss_gradient_stats, parameter_gradient_norm
 from rl_100.common.kl_annealing import kl_annealing_progress
 from rl_100.common.pytorch_util import dict_apply, optimizer_to
 from rl_100.dataset.base_dataset import BaseDataset
@@ -26,6 +28,38 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 def _to_device(batch, device):
     return dict_apply(batch, lambda value: value.to(device, non_blocking=True))
+
+
+def _action_error_metrics(model, dataloader, device, max_steps=None):
+    action_abs_error = 0.0
+    action_squared_error = 0.0
+    action_element_count = 0
+
+    with torch.inference_mode():
+        for batch_idx, batch in enumerate(dataloader):
+            batch = _to_device(batch, device)
+            prediction = model.predict_action(
+                batch["obs"], deterministic=True, use_cm=False
+            )["action"]
+            target_start = model.n_obs_steps - 1 if model.no_pre_action else 0
+            target = batch["action"][
+                :, target_start : target_start + prediction.shape[1]
+            ]
+            error = prediction - target
+            action_abs_error += float(error.abs().sum().cpu())
+            action_squared_error += float(error.square().sum().cpu())
+            action_element_count += error.numel()
+            if max_steps is not None and batch_idx + 1 >= int(max_steps):
+                break
+
+    if action_element_count == 0:
+        raise RuntimeError("Action metric dataloader produced no elements")
+    return {
+        "action_mae": action_abs_error / action_element_count,
+        "action_rmse": float(
+            np.sqrt(action_squared_error / action_element_count)
+        ),
+    }
 
 
 def _checkpoint_payload(cfg, model, ema_model, optimizer, lr_scheduler, epoch, global_step):
@@ -105,6 +139,9 @@ def main(cfg: OmegaConf) -> None:
     val_dataset = dataset.get_validation_dataset()
     train_loader = DataLoader(dataset, **OmegaConf.to_container(cfg.dataloader))
     val_loader = DataLoader(val_dataset, **OmegaConf.to_container(cfg.val_dataloader))
+    train_eval_loader = DataLoader(
+        dataset, **OmegaConf.to_container(cfg.val_dataloader)
+    )
     if len(train_loader) == 0:
         raise RuntimeError("Training dataset produced no batches")
 
@@ -193,7 +230,9 @@ def main(cfg: OmegaConf) -> None:
 
     best_val_action_rmse = float("inf")
     target_beta_kl = None
-    if hasattr(model.obs_encoder, "beta_kl"):
+    if getattr(model.obs_encoder, "use_vib", False) and hasattr(
+        model.obs_encoder, "beta_kl"
+    ):
         target_beta_kl = float(model.obs_encoder.beta_kl)
 
     optimizer.zero_grad(set_to_none=True)
@@ -212,16 +251,47 @@ def main(cfg: OmegaConf) -> None:
         model.train()
         train_losses = []
         component_losses = {"bc_loss": [], "kl_loss": [], "recon_loss": []}
+        gradient_stats = defaultdict(list)
+        log_gradient_norms = bool(cfg.training.get("log_gradient_norms", False))
+        gradient_norm_every = int(cfg.training.get("gradient_norm_every", 100))
+        if log_gradient_norms and gradient_norm_every < 1:
+            raise ValueError("training.gradient_norm_every must be at least 1")
         progress = tqdm.tqdm(train_loader, desc=f"BC epoch {epoch}", leave=False)
         for batch_idx, batch in enumerate(progress):
             batch = _to_device(batch, device)
             raw_loss, loss_items = model.compute_loss(batch)
-            (raw_loss / accumulate).backward()
-
             should_step = (batch_idx + 1) % accumulate == 0 or (
                 batch_idx + 1 == len(train_loader)
             )
+            should_log_gradients = (
+                log_gradient_norms
+                and should_step
+                and global_step % gradient_norm_every == 0
+            )
+            if should_log_gradients:
+                for key, value in loss_gradient_stats(
+                    loss_items.get("_loss_tensors", {}),
+                    model.obs_encoder,
+                    exclude_parameter_prefixes=("decoder.", "decoders."),
+                ).items():
+                    gradient_stats[key].append(value)
+
+            (raw_loss / accumulate).backward()
+
             if should_step:
+                if should_log_gradients:
+                    gradient_stats["grad_total_norm_before_clip"].append(
+                        parameter_gradient_norm(model)
+                    )
+                    gradient_stats["grad_encoder_norm_before_clip"].append(
+                        parameter_gradient_norm(
+                            model.obs_encoder,
+                            exclude_parameter_prefixes=("decoder.", "decoders."),
+                        )
+                    )
+                    gradient_stats["grad_policy_norm_before_clip"].append(
+                        parameter_gradient_norm(model.model)
+                    )
                 max_grad_norm = cfg.training.get("max_grad_norm", None)
                 if max_grad_norm is not None:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), float(max_grad_norm))
@@ -252,6 +322,9 @@ def main(cfg: OmegaConf) -> None:
             metrics["beta_kl"] = float(model.obs_encoder.beta_kl)
         for key, values in component_losses.items():
             metrics[f"train_{key}"] = float(np.mean(values))
+        for key, values in gradient_stats.items():
+            if values:
+                metrics[key] = float(np.mean(values))
 
         should_validate = (epoch + 1) % int(cfg.training.val_every) == 0
         if should_validate and len(val_loader) > 0:
@@ -259,37 +332,34 @@ def main(cfg: OmegaConf) -> None:
             eval_model.eval()
             val_losses = []
             val_bc_losses = []
-            action_abs_error = 0.0
-            action_squared_error = 0.0
-            action_element_count = 0
             with torch.inference_mode():
                 for batch_idx, batch in enumerate(val_loader):
                     batch = _to_device(batch, device)
                     val_loss, val_items = eval_model.compute_loss(batch)
                     val_losses.append(float(val_loss.cpu()))
                     val_bc_losses.append(float(val_items["bc_loss"]))
-
-                    prediction = eval_model.predict_action(
-                        batch["obs"], deterministic=True, use_cm=False
-                    )["action"]
-                    target_start = (
-                        eval_model.n_obs_steps - 1 if eval_model.no_pre_action else 0
-                    )
-                    target = batch["action"][
-                        :, target_start : target_start + prediction.shape[1]
-                    ]
-                    error = prediction - target
-                    action_abs_error += float(error.abs().sum().cpu())
-                    action_squared_error += float(error.square().sum().cpu())
-                    action_element_count += error.numel()
                     max_steps = cfg.training.get("max_val_steps", None)
                     if max_steps is not None and batch_idx + 1 >= int(max_steps):
                         break
             metrics["val_loss"] = float(np.mean(val_losses))
             metrics["val_bc_loss"] = float(np.mean(val_bc_losses))
-            metrics["val_action_mae"] = action_abs_error / action_element_count
-            metrics["val_action_rmse"] = np.sqrt(
-                action_squared_error / action_element_count
+            train_action_metrics = _action_error_metrics(
+                eval_model,
+                train_eval_loader,
+                device,
+                cfg.training.get("max_train_eval_steps", None),
+            )
+            val_action_metrics = _action_error_metrics(
+                eval_model,
+                val_loader,
+                device,
+                cfg.training.get("max_val_steps", None),
+            )
+            metrics.update(
+                {f"train_{key}": value for key, value in train_action_metrics.items()}
+            )
+            metrics.update(
+                {f"val_{key}": value for key, value in val_action_metrics.items()}
             )
             if metrics["val_action_rmse"] < best_val_action_rmse:
                 best_val_action_rmse = metrics["val_action_rmse"]

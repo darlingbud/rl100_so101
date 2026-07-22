@@ -151,6 +151,7 @@ policy:
   use_pretrained_2DEncoder: ${use_pretrained_2DEncoder}
   policy_layer_norm: True
   diffusion_step_embed_dim: 256
+  global_cond_project_dim: null
   encoder_hidden_dim: 256
   encoder_depth: 2
   mlp_policy_depth: 3
@@ -328,8 +329,11 @@ training:
   sample_every: 5
   max_train_steps: null
   max_val_steps: null
+  max_train_eval_steps: null
   tqdm_interval_sec: 1.0
   max_grad_norm: 1.0
+  log_gradient_norms: false
+  gradient_norm_every: 100
   ema_decay: 0.95
 
 logging:

@@ -151,6 +151,7 @@ class ConditionalUnet1D(nn.Module):
         input_dim,
         local_cond_dim=None,
         global_cond_dim=None,
+        global_cond_project_dim=None,
         diffusion_step_embed_dim=256,
         down_dims=[256,512,1024],
         kernel_size=3,
@@ -166,6 +167,20 @@ class ConditionalUnet1D(nn.Module):
         self.use_down_condition = use_down_condition
         self.use_mid_condition = use_mid_condition
         self.use_up_condition = use_up_condition
+
+        self.global_cond_projector = None
+        effective_global_cond_dim = global_cond_dim
+        if global_cond_project_dim is not None:
+            if global_cond_dim is None:
+                raise ValueError(
+                    "global_cond_dim is required when global_cond_project_dim is set"
+                )
+            effective_global_cond_dim = int(global_cond_project_dim)
+            self.global_cond_projector = nn.Sequential(
+                nn.Linear(global_cond_dim, effective_global_cond_dim),
+                nn.LayerNorm(effective_global_cond_dim),
+                nn.Mish(),
+            )
         
         all_dims = [input_dim] + list(down_dims)
         start_dim = down_dims[0]
@@ -178,8 +193,8 @@ class ConditionalUnet1D(nn.Module):
             nn.Linear(dsed * 4, dsed),
         )
         cond_dim = dsed
-        if global_cond_dim is not None:
-            cond_dim += global_cond_dim
+        if effective_global_cond_dim is not None:
+            cond_dim += effective_global_cond_dim
 
         in_out = list(zip(all_dims[:-1], all_dims[1:]))
         local_cond_encoder = None
@@ -283,6 +298,8 @@ class ConditionalUnet1D(nn.Module):
 
         timestep_embed = self.diffusion_step_encoder(timesteps)
         if global_cond is not None:
+            if self.global_cond_projector is not None:
+                global_cond = self.global_cond_projector(global_cond)
             if self.condition_type == 'cross_attention':
                 timestep_embed = timestep_embed.unsqueeze(1).expand(-1, global_cond.shape[1], -1)
             global_feature = torch.cat([timestep_embed, global_cond], axis=-1)
@@ -338,7 +355,6 @@ class ConditionalUnet1D(nn.Module):
         x = self.final_conv(x)
         x = einops.rearrange(x, 'b t h -> b h t')
         return x
-
 
 
 

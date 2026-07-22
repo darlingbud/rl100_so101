@@ -448,11 +448,13 @@ class MultiImageObsEncoder(ModuleAttrMixin):
             recon_loss = torch.stack(recon_losses).mean() * self.recon_loss_weight
             loss += recon_loss
             aux_losses['recon_loss'] = recon_loss.item()
+            aux_losses['_recon_loss_tensor'] = recon_loss
         if self.use_vib:
             # Fix 5: use self.beta_kl
             vib_loss = torch.stack(kl_losses).mean() * self.kl_loss_weight * self.beta_kl
             loss += vib_loss
             aux_losses['kl_loss'] = vib_loss.item()
+            aux_losses['_kl_loss_tensor'] = vib_loss
         result = torch.cat(features, dim=-1)
         return loss, aux_losses, result
 

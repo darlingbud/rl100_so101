@@ -72,6 +72,8 @@ training:
   lr_warmup_steps: 500
   checkpoint_every: 25
   val_every: 5
+  log_gradient_norms: false
+  gradient_norm_every: 100
 
 checkpoint:
   save_ckpt: true
